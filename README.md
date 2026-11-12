@@ -11,8 +11,9 @@ afterwards.
 
 ## What it does
 
-- Installs GE-Proton11-7 into Steam's `compatibilitytools.d` and selects it for
-  the game.
+- Checks which Proton Steam will run the game with, and warns if it isn't a
+  Proton 11 release. It doesn't install or select a Proton itself (see
+  [Proton](#proton)).
 - Creates the game's Proton prefix and installs .NET Framework 4.8,
   `d3dcompiler_47` and subpixel font smoothing through winetricks.
 - Installs WebView2 runtime 109, the last one that installs under Wine, so
@@ -30,7 +31,22 @@ Downloads are pinned and checksummed, and cached in `~/.cache/cmo-setup`.
 - Steam (native, Flatpak, Snap or the Debian/Ubuntu package)
 - `protontricks`, installed natively or with pipx. The Flatpak version isn't
   supported.
-- `curl`, `tar`, `awk`, `cmp`, `pgrep`, `sha256sum` and `sha512sum`
+- A Proton chosen for the game in Steam, ideally an 11-series release (see
+  [Proton](#proton))
+- `curl`, `awk`, `cmp`, `find`, `pgrep` and `sha256sum`
+
+## Proton
+
+The script uses whichever Proton Steam would run the game with: the one forced
+in the game's Properties > Compatibility, or else the default under Settings >
+Compatibility. The setup is tested with 11-series releases; with any other
+series the script warns and carries on. If no Proton is selected at all, or the
+selected one isn't installed, it stops and tells you what to change.
+
+Tested with GE-Proton11-12, Valve's Proton 11.0, Proton-CachyOS 11.0 and
+Proton-Wineland 11.0. With Proton-Wineland the game doesn't recognise that it
+was started from Steam unless you put `PROTON_SET_GAME_DRIVE=0` in front of
+the launch options.
 
 ## Usage
 
@@ -43,14 +59,14 @@ Then launch the game from Steam as usual.
 | Option         | Meaning                                                                 |
 | -------------- | ----------------------------------------------------------------------- |
 | `--scale N`    | Scale the game's UI by `N` (e.g. `1.5` or `2`). Without it, the DPI is left as it is. |
-| `--stop-steam` | Shut Steam down if it's running, so the game's Steam settings can be changed. |
+| `--stop-steam` | Shut Steam down if it's running, so the game's launch options can be set. |
 | `--reset`      | Delete the game's Proton prefix and build it again. The game directory isn't touched. |
 | `--steam-root` | Path to the Steam directory, if auto-detection doesn't find it.         |
 
 Steam rewrites its settings when it exits, so the script only changes them while
 Steam is closed. If Steam is running and you don't pass `--stop-steam`, it
-prints what it would have changed, so you can set it in the game's Properties
-instead.
+prints the launch options it would have set, so you can enter them in the
+game's Properties instead.
 
 ## UI scaling
 
@@ -77,11 +93,10 @@ own, the script leaves them alone and prints the line to add.
 
 ## Undoing it
 
-- Steam settings: the script saves the original files as
-  `config/config.vdf.cmo-setup.bak` and
-  `userdata/<id>/config/localconfig.vdf.cmo-setup.bak` in your Steam directory.
-  You can also clear the launch options and choose another compatibility tool
-  in the game's Properties.
+- Launch options: clear them in the game's Properties. The first time the
+  script changes `userdata/<id>/config/localconfig.vdf` in your Steam
+  directory, it keeps the original next to it as
+  `localconfig.vdf.cmo-setup.bak`.
 - Prefix: delete `steamapps/compatdata/1076160`, and Steam makes a fresh one
   on the next launch.
 - Host: delete `CommandDPI.exe` from the game directory.

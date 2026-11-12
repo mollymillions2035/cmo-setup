@@ -4,14 +4,15 @@
 #
 # It never asks Steam to install the game. If the game is not installed yet,
 # it sets up what it can and tells you to re-run once Steam has installed it.
+# It does not install Proton either: pick a Proton in Steam first.
 set -euo pipefail
 
 APPID=1076160
 
-GE_TAG=GE-Proton11-7
-GE_NAME=GE-Proton11-7-x86_64 # directory and internal tool name
-GE_URL="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$GE_TAG/$GE_NAME.tar.gz"
-GE_SHA512=7db87e9787e20c35cbdac26018431d5794626b626e4067b050684e45a88cc2ca229d7d263519eafb2e168cde5bef57611065d159d3685aaec152ccb9abe3073f
+# The setup is tested with 11-series Protons (Valve's, GE, CachyOS). The script
+# does not install or select one; it looks at what Steam will use for the game
+# and warns if that is another series.
+PROTON_SERIES=11
 
 # Newer WebView2 runtimes do not install under Wine; 109 does.
 WV2_VERSION=109.0.1518.78
@@ -95,7 +96,7 @@ fetch() {
 
 log "Checking requirements"
 missing=()
-for cmd in awk cmp curl pgrep tar sha256sum sha512sum protontricks protontricks-launch; do
+for cmd in awk cmp curl find pgrep sha256sum protontricks protontricks-launch; do
     command -v "$cmd" >/dev/null || missing+=("$cmd")
 done
 ((${#missing[@]} == 0)) || die "missing commands: ${missing[*]} (install them with your package manager; protontricks must be the native or pipx version, not the Flatpak)"
@@ -120,30 +121,94 @@ ok "Steam at $STEAM_ROOT"
 
 # --- Proton -------------------------------------------------------------------
 
-log "Installing $GE_NAME"
-GE_DIR="$STEAM_ROOT/compatibilitytools.d/$GE_NAME"
-if [[ -x $GE_DIR/proton && $(cut -d' ' -f2 "$GE_DIR/version" 2>/dev/null) == "$GE_TAG" ]]; then
-    ok "already installed"
+log "Checking the game's Proton"
+# Prints the compatibility tool Steam will run the game with: where the choice
+# comes from, its name, its directory and its version string, one per line.
+# The directory and version are empty if the tool is not installed.
+proton_info() {
+    "$PYTHON" - "$STEAM_ROOT" "$APPID" <<'EOF'
+import glob, os, re, sys, vdf
+
+root, appid = sys.argv[1:]
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return vdf.load(f)
+
+cfg = load(os.path.join(root, "config", "config.vdf"))
+mapping = cfg["InstallConfigStore"]["Software"]["Valve"]["Steam"].get("CompatToolMapping", {})
+source, name = "game", mapping.get(appid, {}).get("name", "")
+if not name:
+    source, name = "default", mapping.get("0", {}).get("name", "")
+
+libraries = [root]
+try:
+    lf = load(os.path.join(root, "steamapps", "libraryfolders.vdf"))
+    libraries += [v["path"] for v in lf.get("libraryfolders", {}).values() if isinstance(v, dict) and "path" in v]
+except FileNotFoundError:
+    pass
+
+tool_dir = ""
+# Custom tools (GE, CachyOS, ...) register a name that can differ from their
+# directory name. The manifest is in the tool's directory, or directly in
+# compatibilitytools.d with an install_path pointing at the tool.
+custom = [os.path.join(root, "compatibilitytools.d"), "/usr/share/steam/compatibilitytools.d",
+          "/usr/local/share/steam/compatibilitytools.d"]
+custom += [d for d in os.environ.get("STEAM_EXTRA_COMPAT_TOOLS_PATHS", "").split(":") if d]
+for manifest in (m for d in custom for pattern in ("*/compatibilitytool.vdf", "*.vdf")
+                 for m in sorted(glob.glob(os.path.join(d, pattern)))):
+    try:
+        tools = load(manifest)["compatibilitytools"]["compat_tools"]
+    except Exception:
+        continue
+    if name in tools:
+        tool_dir = os.path.normpath(os.path.join(os.path.dirname(manifest), tools[name].get("install_path", ".")))
+        break
+# Valve's own are Steam apps, e.g. proton_11 is "Proton 11.0".
+if name and not tool_dir:
+    m = re.fullmatch(r"proton_(\d+)", name)
+    title = {"proton_experimental": "Proton - Experimental", "proton_hotfix": "Proton Hotfix"}.get(
+        name, f"Proton {m.group(1)}.0" if m else "")
+    for lib in libraries if title else []:
+        d = os.path.join(lib, "steamapps", "common", title)
+        if os.path.isfile(os.path.join(d, "proton")):
+            tool_dir = d
+            break
+
+version = ""
+if tool_dir:
+    try:
+        with open(os.path.join(tool_dir, "version"), encoding="utf-8") as f:
+            version = f.read().split()[-1]
+    except (OSError, IndexError):
+        pass
+print(source, name, tool_dir, version, sep="\n")
+EOF
+}
+info=$(proton_info) || die "could not read Steam's compatibility tool settings from $STEAM_ROOT/config/config.vdf"
+{ IFS= read -r PROTON_SOURCE; IFS= read -r PROTON_NAME; IFS= read -r PROTON_DIR; IFS= read -r PROTON_VERSION_STRING; } <<<"$info" || true
+proton_help="In Steam, open the game's Properties > Compatibility and force a Proton release (or set one as the default under Settings > Compatibility), then run this script again. If you only just changed it, restart Steam first so the setting is saved."
+[[ -n $PROTON_NAME ]] || die "Steam has no compatibility tool set for the game. $proton_help"
+[[ $PROTON_SOURCE == game ]] && proton_from="set for the game" || proton_from="Steam's default"
+[[ -n $PROTON_DIR && -x $PROTON_DIR/proton ]] ||
+    die "the game's compatibility tool '$PROTON_NAME' ($proton_from) is not installed or was not found. $proton_help"
+# Version strings look like GE-Proton11-12, proton-11.0-2e or cachyos-11.0-20261015.
+if [[ $PROTON_VERSION_STRING =~ (^|[^0-9.])$PROTON_SERIES[.-][0-9] ]]; then
+    ok "$PROTON_NAME ($PROTON_VERSION_STRING, $proton_from)"
 else
-    fetch "$GE_URL" "$CACHE_DIR/$GE_NAME.tar.gz" sha512 "$GE_SHA512"
-    mkdir -p "$STEAM_ROOT/compatibilitytools.d"
-    tmp=$(mktemp -d "$STEAM_ROOT/compatibilitytools.d/.cmo-setup.XXXXXX")
-    tar -xzf "$CACHE_DIR/$GE_NAME.tar.gz" -C "$tmp"
-    rm -rf "$GE_DIR"
-    mv "$tmp/$GE_NAME" "$GE_DIR"
-    rmdir "$tmp"
-    ok "installed to $GE_DIR"
+    warn "the game runs with '$PROTON_NAME' (${PROTON_VERSION_STRING:-unknown version}, $proton_from), which is not a"
+    warn "Proton $PROTON_SERIES release. The setup is only tested with Proton $PROTON_SERIES; carrying on anyway."
 fi
 
 log "Configuring the game in Steam"
-# Forces $GE_NAME for the game in config.vdf and sets its launch options so
-# Steam starts $HOST_EXE. With "check" it only lists what would change. Lines
-# starting with "!" are problems that were left alone.
+# Sets the game's launch options so Steam starts $HOST_EXE. With "check" it only
+# lists what would change. Lines starting with "!" are problems that were left
+# alone.
 steam_config() {
-    "$PYTHON" - "$1" "$STEAM_ROOT" "$APPID" "$GE_NAME" "$LAUNCH_OPTIONS" <<'EOF'
+    "$PYTHON" - "$1" "$STEAM_ROOT" "$APPID" "$LAUNCH_OPTIONS" <<'EOF'
 import glob, os, shutil, sys, vdf
 
-mode, root, appid, tool, launch = sys.argv[1:]
+mode, root, appid, launch = sys.argv[1:]
 
 def load(path):
     with open(path, encoding="utf-8") as f:
@@ -155,15 +220,6 @@ def save(path, data):
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         vdf.dump(data, f, pretty=True)
     os.replace(path + ".tmp", path)
-
-path = os.path.join(root, "config", "config.vdf")
-cfg = load(path)
-mapping = cfg["InstallConfigStore"]["Software"]["Valve"]["Steam"].setdefault("CompatToolMapping", {})
-if mapping.get(appid, {}).get("name") != tool:
-    print(f"compatibility tool -> {tool}")
-    if mode == "apply":
-        mapping[appid] = {"name": tool, "config": "", "priority": "250"}
-        save(path, cfg)
 
 for path in glob.glob(os.path.join(root, "userdata", "*", "config", "localconfig.vdf")):
     cfg = load(path)
@@ -201,12 +257,12 @@ else
     if steam_running; then
         # Steam rewrites its config on exit, so editing it now would be lost.
         warn "Steam is running, so its config was left alone. Re-run with --stop-steam,"
-        warn "or change these in the game's Properties by hand:"
+        warn "or set this in the game's Properties by hand:"
         while IFS= read -r line; do warn "  $line"; done <<<"$changes"
     else
         steam_config apply >/dev/null
         while IFS= read -r line; do ok "$line"; done <<<"$changes"
-        ok "originals backed up as *.cmo-setup.bak"
+        ok "the file as it was before this script first changed it is kept as localconfig.vdf.cmo-setup.bak"
     fi
 fi
 
@@ -255,22 +311,25 @@ fi
 log "Preparing the Proton prefix"
 if [[ -f $COMPAT/version && -f $PFX/system.reg ]]; then
     made_by=$(head -n1 "$COMPAT/config_info" 2>/dev/null || true)
-    if [[ $made_by != "$GE_TAG" ]]; then
-        warn "the prefix was made by '${made_by:-unknown}', not $GE_TAG; re-run with --reset for a clean one"
+    # What a Proton stamps its prefixes with, such as 11.0-100. Proton upgrades
+    # an older prefix by itself the next time the game starts.
+    stamp=$(sed -n 's/^CURRENT_PREFIX_VERSION="\(.*\)"$/\1/p' "$PROTON_DIR/proton")
+    if [[ -n $stamp && $made_by != "$stamp" ]]; then
+        warn "the prefix is from another Proton ('${made_by:-unknown}'); $PROTON_NAME upgrades it on the next"
+        warn "launch. If the game misbehaves, re-run with --reset for a clean one."
     fi
     ok "prefix exists"
 else
     mkdir -p "$COMPAT"
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" STEAM_COMPAT_DATA_PATH="$COMPAT" \
         SteamAppId=$APPID SteamGameId=$APPID PROTONFIXES_DISABLE=1 \
-        "$GE_DIR/proton" run wineboot -u >/dev/null 2>&1
+        "$PROTON_DIR/proton" run wineboot -u >/dev/null 2>&1
     [[ -f $PFX/system.reg ]] || die "Proton failed to create the prefix at $PFX"
     ok "created $PFX"
 fi
 
-# protontricks would otherwise use the tool Steam has selected, which may not
-# be set yet if Steam was running.
-export PROTON_VERSION=$GE_NAME STEAM_DIR=$STEAM_ROOT
+# protontricks picks the same Proton as Steam: the game's, else the default.
+export STEAM_DIR=$STEAM_ROOT
 
 log "Running winetricks (${WINETRICKS_VERBS[*]})"
 for verb in "${WINETRICKS_VERBS[@]}"; do
