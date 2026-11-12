@@ -44,9 +44,12 @@ series the script warns and carries on. If no Proton is selected at all, or the
 selected one isn't installed, it stops and tells you what to change.
 
 Tested with GE-Proton11-12, Valve's Proton 11.0, Proton-CachyOS 11.0 and
-Proton-Wineland 11.0. With Proton-Wineland the game doesn't recognise that it
-was started from Steam unless you put `PROTON_SET_GAME_DRIVE=0` in front of
-the launch options.
+Proton-Wineland 11.0.
+
+The first three run the game through XWayland. Proton-Wineland runs it as a
+native Wayland window. With it the game doesn't recognise that it was started
+from Steam unless `PROTON_SET_GAME_DRIVE=0` is in front of the launch options,
+so the script adds that when it sees Proton-Wineland.
 
 ## Usage
 
@@ -89,7 +92,9 @@ bash -c 'exec "${@/Launcher.exe/CommandDPI.exe}"' -- %command%
 ```
 
 This skips the launcher window. If the game already has launch options of your
-own, the script leaves them alone and prints the line to add.
+own, the script leaves them alone and prints the line to add. If you switch
+the game to or from Proton-Wineland, run the script again so it updates the
+options it set.
 
 ## Undoing it
 

@@ -31,6 +31,10 @@ WINETRICKS_VERBS=(dotnet48 d3dcompiler_47 fontsmooth=rgb)
 # small host exe runs it DPI-unaware instead, so Wine scales the whole window.
 HOST_EXE=CommandDPI.exe
 LAUNCH_OPTIONS="bash -c 'exec \"\${@/Launcher.exe/$HOST_EXE}\"' -- %command%"
+# Proton-Wineland maps the game's drive so that the game sees itself in
+# S:\common instead of S:\steamapps\common and no longer recognises that it
+# was started from Steam. Without the drive it runs from Z: and does.
+WINELAND_LAUNCH_OPTIONS="PROTON_SET_GAME_DRIVE=0 $LAUNCH_OPTIONS"
 
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/cmo-setup"
 
@@ -201,14 +205,20 @@ else
 fi
 
 log "Configuring the game in Steam"
+OTHER_LAUNCH_OPTIONS=$WINELAND_LAUNCH_OPTIONS
+proton_id=$PROTON_NAME$PROTON_VERSION_STRING
+if [[ ${proton_id,,} == *wineland* ]]; then
+    OTHER_LAUNCH_OPTIONS=$LAUNCH_OPTIONS
+    LAUNCH_OPTIONS=$WINELAND_LAUNCH_OPTIONS
+fi
 # Sets the game's launch options so Steam starts $HOST_EXE. With "check" it only
 # lists what would change. Lines starting with "!" are problems that were left
-# alone.
+# alone. Options this script set for another Proton are replaced.
 steam_config() {
-    "$PYTHON" - "$1" "$STEAM_ROOT" "$APPID" "$LAUNCH_OPTIONS" <<'EOF'
+    "$PYTHON" - "$1" "$STEAM_ROOT" "$APPID" "$LAUNCH_OPTIONS" "$OTHER_LAUNCH_OPTIONS" <<'EOF'
 import glob, os, shutil, sys, vdf
 
-mode, root, appid, launch = sys.argv[1:]
+mode, root, appid, launch, other = sys.argv[1:]
 
 def load(path):
     with open(path, encoding="utf-8") as f:
@@ -228,7 +238,7 @@ for path in glob.glob(os.path.join(root, "userdata", "*", "config", "localconfig
     user = path.split(os.sep)[-3]
     if current == launch:
         continue
-    if current:
+    if current and current != other:
         print(f"! user {user} has its own launch options; set them to: {launch}")
         continue
     print(f"launch options for user {user} -> {launch}")
